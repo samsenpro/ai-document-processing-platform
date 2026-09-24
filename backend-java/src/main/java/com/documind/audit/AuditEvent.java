@@ -1,0 +1,11 @@
+package com.documind.audit;
+
+public enum AuditEvent {
+    USER_REGISTERED,
+    USER_CREATED,
+    DOCUMENT_UPLOADED,
+    PROCESSING_STARTED,
+    PROCESSING_COMPLETED,
+    PROCESSING_FAILED,
+    DOCUMENT_DELETED
+}

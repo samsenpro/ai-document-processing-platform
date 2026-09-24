@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Backend Java: métricas de negocio (documents_*, processing_duration, ai_requests_*), HTTP,
+  # JVM, HikariCP y Resilience4j (estado del circuit breaker, reintentos)
+  - job_name: java-api
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["java-api:8080"]
+
+  # Servicio de IA: duración del pipeline y de cada paso, OCR, llamadas al LLM y errores
+  - job_name: python-ai
+    metrics_path: /metrics/
+    static_configs:
+      - targets: ["python-ai:8000"]

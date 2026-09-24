@@ -1,0 +1,178 @@
+spring:
+  application:
+    name: documind-api
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:documind}
+    username: ${POSTGRES_USER:documind}
+    password: ${POSTGRES_PASSWORD:}
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 3000
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  flyway:
+    locations: classpath:db/migration
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2s
+    web:
+      pageable:
+        max-page-size: 100
+  cache:
+    type: redis
+  servlet:
+    multipart:
+      # El límite real lo aplica DocumentFileValidator; este solo evita peticiones desproporcionadas
+      max-file-size: ${FILE_MAX_SIZE:20MB}
+      max-request-size: 21MB
+  threads:
+    virtual:
+      enabled: true
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  # Detrás de nginx la IP real del cliente llega en X-Forwarded-For (solo se confía en proxies internos)
+  forward-headers-strategy: native
+  error:
+    include-stacktrace: never
+    include-message: never
+
+documind:
+  version: @project.version@
+  security:
+    jwt:
+      secret: ${JWT_SECRET}
+      issuer: documind-api
+      access-token-ttl: ${JWT_ACCESS_TOKEN_TTL:15m}
+      refresh-token-ttl: ${JWT_REFRESH_TOKEN_TTL:7d}
+  ai-service:
+    url: ${AI_SERVICE_URL:http://localhost:8000}
+    api-key: ${AI_SERVICE_API_KEY}
+    # URL con la que el servicio de IA llega a este backend para descargar el documento
+    document-source-base-url: ${DOCUMENT_SOURCE_BASE_URL:http://localhost:8080}
+    connect-timeout: 3s
+    read-timeout: ${AI_SERVICE_READ_TIMEOUT:120s}
+  storage:
+    local-path: ${FILE_STORAGE_PATH:./storage/documents}
+    max-file-size: ${FILE_MAX_SIZE:20MB}
+  queue:
+    stream: documind:processing:jobs
+    group: documind-workers
+    consumer-name: ${WORKER_CONSUMER_NAME:${HOSTNAME:documind-api}}
+    concurrency: ${WORKER_CONCURRENCY:2}
+    poll-timeout: 2s
+    # Mayor que el peor caso de un procesamiento (read-timeout x intentos + esperas)
+    abandoned-after: 15m
+    max-length: 10000
+  processing:
+    # Mayor que queue.abandoned-after: un mensaje abandonado se reencola antes de dar el job por perdido
+    queued-timeout: ${PROCESSING_QUEUED_TIMEOUT:20m}
+    running-timeout: ${PROCESSING_RUNNING_TIMEOUT:10m}
+    reaper-interval: 60s
+    state-ttl: 1h
+  idempotency:
+    ttl: 24h
+    pending-ttl: 5m
+  cache:
+    results-ttl: 1h
+  rate-limit:
+    enabled: ${RATE_LIMIT_ENABLED:true}
+    policies:
+      # Login, registro y refresh por IP: frena ataques de fuerza bruta
+      auth:
+        limit: 10
+        window: 1m
+      # Operaciones que disparan procesamiento de IA, por usuario
+      upload:
+        limit: ${RATE_LIMIT_UPLOADS_PER_MINUTE:20}
+        window: 1m
+      process:
+        limit: ${RATE_LIMIT_PROCESS_PER_MINUTE:10}
+        window: 1m
+      read:
+        limit: 300
+        window: 1m
+
+resilience4j:
+  retry:
+    instances:
+      aiService:
+        max-attempts: 3
+        wait-duration: 2s
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+        retry-exceptions:
+          - com.documind.ai.AiServiceUnavailableException
+        ignore-exceptions:
+          - com.documind.ai.AiProcessingRejectedException
+          - io.github.resilience4j.circuitbreaker.CallNotPermittedException
+  circuitbreaker:
+    instances:
+      aiService:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 2
+        automatic-transition-from-open-to-half-open-enabled: true
+        register-health-indicator: true
+        record-exceptions:
+          - com.documind.ai.AiServiceUnavailableException
+        ignore-exceptions:
+          - com.documind.ai.AiProcessingRejectedException
+
+springdoc:
+  api-docs:
+    enabled: ${API_DOCS_ENABLED:true}
+  swagger-ui:
+    enabled: ${API_DOCS_ENABLED:true}
+    path: /swagger-ui.html
+    operations-sorter: method
+  override-with-generic-response: false
+  paths-to-exclude: /internal/**
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # Lista cerrada: nada de env, beans, heapdump o configprops expuestos por accidente
+        include: health, info, metrics, prometheus
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+  health:
+    circuitbreakers:
+      enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  info:
+    env:
+      enabled: true
+
+info:
+  app:
+    name: ${spring.application.name}
+    version: @project.version@
+
+logging:
+  # En Docker se activa el formato JSON (ECS) con LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs: una línea por
+  # evento, con correlation_id y document_id del MDC
+  pattern:
+    correlation: "[%X{correlation_id:-}] "
