@@ -50,7 +50,7 @@ def test_llm_summary_is_used_when_available():
     llm = FakeLlm({"summarization": "Factura de ACME por 4.165.000 COP."})
     summary = Summarizer(llm).summarize(samples.INVOICE_ES, DocumentType.INVOICE, {}, "es", [])
     assert (summary.text, summary.method) == ("Factura de ACME por 4.165.000 COP.", "LLM")
-    assert "Spanish" in llm.calls[0]["system"]
+    assert "en español" in llm.calls[0]["system"]
 
 
 def test_llm_failure_falls_back_to_extractive_summary():
@@ -59,3 +59,19 @@ def test_llm_failure_falls_back_to_extractive_summary():
     summary = Summarizer(llm).summarize(samples.REPORT_ES, DocumentType.REPORT, {}, "es", warnings)
     assert summary.method == "EXTRACTIVE" and summary.text
     assert "timed out" in warnings[0]
+
+
+def test_llm_summary_is_normalized_to_a_plain_paragraph():
+    llm = FakeLlm({"summarization": "## Resumen\n- **Factura** FE-10234 de ACME SOLUCIONES S.A.S.\n"
+                                    "- Total a pagar de 4.165.000 COP"})
+    summary = Summarizer(llm).summarize(samples.INVOICE_ES, DocumentType.INVOICE, {}, "es", [])
+    assert summary.text == "Resumen Factura FE-10234 de ACME SOLUCIONES S.A.S. Total a pagar de 4.165.000 COP"
+
+
+def test_llm_summary_in_another_language_is_discarded():
+    warnings: list[str] = []
+    llm = FakeLlm({"summarization": "This is an invoice issued by ACME SOLUCIONES S.A.S. to Industrias Andinas LTDA "
+                                    "for a total amount due of 4,165,000 with the payment terms of the agreement."})
+    summary = Summarizer(llm).summarize(samples.REPORT_ES, DocumentType.REPORT, {}, "es", warnings)
+    assert summary.method == "EXTRACTIVE"
+    assert "instead of 'es'" in warnings[0]

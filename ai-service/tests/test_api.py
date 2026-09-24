@@ -64,15 +64,16 @@ def test_user_selected_type_is_respected(client_factory):
 def test_llm_results_and_model_are_reported(client_factory):
     llm = FakeLlm({
         "classification": json.dumps({"document_type": "REPORT", "confidence": 0.7}),
-        "extraction": json.dumps({"title": "Reunión de planeación", "sections": ["Agenda"]}),
+        "extraction": json.dumps({"title": "Otro título", "sections": ["Reunión de planeación", "Agenda"]}),
         "summarization": "Convocatoria a la reunión de planeación del 5 de junio.",
     })
     client = client_factory({URL: samples.OTHER_ES.encode()}, llm=llm)
     body = client.post("/api/v1/process", json=payload(), headers=HEADERS).json()
     assert body["document_type"] == "REPORT"
-    # El título lo encuentran las reglas y se conserva; el LLM solo completa las secciones
+    # El título lo encuentran las reglas y se conserva; de las secciones del LLM solo queda la que
+    # aparece en el documento
     assert body["entities"]["title"] == "Hola equipo,"
-    assert body["entities"]["sections"] == ["Agenda"]
+    assert body["entities"]["sections"] == ["Reunión de planeación"]
     assert body["summary"] == "Convocatoria a la reunión de planeación del 5 de junio."
     assert body["metadata"]["llm_model"] == "fake-model"
     assert body["metadata"]["extraction_method"] == "RULES+LLM"

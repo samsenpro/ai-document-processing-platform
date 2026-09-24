@@ -112,11 +112,31 @@ def test_llm_only_fills_fields_the_rules_did_not_find():
         "expiry_date": "2034-09-20",
         "document_number": "999",  # no se pidió: nunca sustituye al valor de las reglas
     })})
-    result = extract(samples.IDENTIFICATION_ES, DocumentType.IDENTIFICATION, llm=llm)
+    # Las reglas no reconocen esta forma de expresar el vencimiento; el LLM sí
+    text = samples.IDENTIFICATION_ES + "Documento válido para trámites hasta el 20/09/2034"
+    result = extract(text, DocumentType.IDENTIFICATION, llm=llm)
     assert result.method == "RULES+LLM"
     assert result.entities["expiry_date"] == "2034-09-20"
     assert result.entities["document_number"] == "1020304050"
     assert '"expiry_date"' in llm.calls[0]["system"] and '"document_number"' not in llm.calls[0]["system"]
+
+
+def test_llm_values_not_present_in_the_document_are_discarded():
+    warnings: list[str] = []
+    llm = FakeLlm({"extraction": json.dumps({"currency": "CLP", "merchant": "Tienda Inventada"})})
+    receipt = samples.RECEIPT_ES.replace("SUPERMERCADO LA ECONOMÍA S.A.S.", "")  # sin comercio ni moneda
+    result = extract(receipt, DocumentType.RECEIPT, llm=llm, warnings=warnings)
+    assert result.entities["currency"] is None
+    assert result.entities["merchant"] != "Tienda Inventada"
+    assert "currency" in warnings[0]
+
+
+def test_llm_values_found_in_the_document_are_kept():
+    llm = FakeLlm({"extraction": json.dumps({"currency": "COP", "invoice_number": "FE-10234"})})
+    text = samples.INVOICE_ES.replace("No. FE-10234", "(ref FE-10234)").replace("$", "COP")
+    entities = extract(text, DocumentType.INVOICE, llm=llm).entities
+    assert entities["invoice_number"] == "FE-10234"
+    assert entities["currency"] == "COP"
 
 
 def test_invalid_llm_values_are_discarded():
