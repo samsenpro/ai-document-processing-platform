@@ -15,6 +15,7 @@ import org.springframework.data.redis.connection.stream.PendingMessages;
 import org.springframework.data.redis.connection.stream.ReadOffset;
 import org.springframework.data.redis.connection.stream.RecordId;
 import org.springframework.data.redis.connection.stream.StreamOffset;
+import org.springframework.data.redis.connection.stream.StreamReadOptions;
 import org.springframework.data.redis.connection.stream.StreamRecords;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.stream.StreamMessageListenerContainer;
@@ -26,13 +27,18 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Cola de jobs sobre Redis Streams con un grupo de consumidores.
  * <ul>
  *   <li>Cada mensaje lo recibe un solo consumidor del grupo, aunque haya varias instancias de la API.</li>
- *   <li>El ACK se envía después de procesar: si la instancia muere a mitad, el mensaje queda pendiente
- *       y {@link #requeueAbandoned()} lo vuelve a encolar.</li>
+ *   <li>El ACK se envía después de procesar: si la instancia se detiene a mitad, el mensaje queda
+ *       pendiente y se reencola al volver a arrancar (o, si la instancia no vuelve, lo reclama
+ *       {@link #requeueAbandoned()} desde otra).</li>
  *   <li>El stream se recorta a {@code maxLength} entradas para que no crezca sin límite.</li>
  * </ul>
  */
@@ -47,6 +53,7 @@ public class RedisStreamJobQueue implements ProcessingJobQueue, SmartLifecycle {
     private final QueueProperties properties;
 
     private StreamMessageListenerContainer<String, MapRecord<String, String, String>> container;
+    private ExecutorService executor;
     private volatile boolean running;
 
     public RedisStreamJobQueue(StringRedisTemplate redis, RedisConnectionFactory connectionFactory,
@@ -70,14 +77,19 @@ public class RedisStreamJobQueue implements ProcessingJobQueue, SmartLifecycle {
     @Override
     public void start() {
         createGroupIfMissing();
+        requeueOwnPendingMessages();
+        AtomicInteger threads = new AtomicInteger();
+        executor = Executors.newFixedThreadPool(properties.concurrency(),
+                task -> new Thread(task, "job-worker-" + threads.incrementAndGet()));
         StreamMessageListenerContainerOptions<String, MapRecord<String, String, String>> options =
                 StreamMessageListenerContainerOptions.builder()
                         .pollTimeout(properties.pollTimeout())
                         .batchSize(1)
+                        .executor(executor)
                         .build();
         container = StreamMessageListenerContainer.create(connectionFactory, options);
         for (int i = 0; i < properties.concurrency(); i++) {
-            Consumer consumer = Consumer.from(properties.group(), properties.consumerName() + "-" + i);
+            Consumer consumer = consumer(i);
             container.register(StreamReadRequest.builder(StreamOffset.create(properties.stream(), ReadOffset.lastConsumed()))
                     .consumer(consumer)
                     .autoAcknowledge(false)
@@ -119,11 +131,21 @@ public class RedisStreamJobQueue implements ProcessingJobQueue, SmartLifecycle {
                     properties.stream().getBytes(StandardCharsets.UTF_8), properties.group(),
                     ReadOffset.from("0"), true), true);
         } catch (RedisSystemException ex) {
-            if (ex.getMessage() == null || !ex.getMessage().contains("BUSYGROUP")) {
+            // El grupo ya existe (arranques posteriores o varias instancias). El error de Redis llega
+            // envuelto: hay que buscar BUSYGROUP en la cadena de causas, no en el mensaje exterior
+            if (!isBusyGroup(ex)) {
                 throw ex;
             }
-            // El grupo ya existe (arranques posteriores o varias instancias)
         }
+    }
+
+    private static boolean isBusyGroup(Throwable error) {
+        for (Throwable current = error; current != null; current = current.getCause()) {
+            if (current.getMessage() != null && current.getMessage().contains("BUSYGROUP")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -142,14 +164,44 @@ public class RedisStreamJobQueue implements ProcessingJobQueue, SmartLifecycle {
             List<MapRecord<String, Object, Object>> claimed = redis.opsForStream().claim(properties.stream(),
                     properties.group(), recoverer, properties.abandonedAfter(), message.getId());
             for (MapRecord<String, Object, Object> record : claimed) {
-                Map<String, String> values = new HashMap<>();
-                record.getValue().forEach((key, value) -> values.put(key.toString(), value.toString()));
-                publish(ProcessingJob.fromMap(values));
-                acknowledge(record.getId());
+                requeue(record);
                 requeued++;
             }
         }
         return requeued;
+    }
+
+    /**
+     * Al arrancar, los mensajes pendientes de los consumidores de esta instancia son de una ejecución
+     * anterior que se detuvo antes de confirmarlos: se reencolan de inmediato, sin esperar al umbral
+     * de mensaje abandonado. Si el procesamiento ya no está en cola, el worker los descartará.
+     */
+    private void requeueOwnPendingMessages() {
+        int requeued = 0;
+        for (int i = 0; i < properties.concurrency(); i++) {
+            List<MapRecord<String, Object, Object>> pending = redis.opsForStream().read(consumer(i),
+                    StreamReadOptions.empty().count(100),
+                    StreamOffset.create(properties.stream(), ReadOffset.from("0")));
+            for (MapRecord<String, Object, Object> record : pending == null ? List.<MapRecord<String, Object, Object>>of()
+                    : pending) {
+                requeue(record);
+                requeued++;
+            }
+        }
+        if (requeued > 0) {
+            log.warn("Requeued {} jobs left pending by a previous run of this instance", requeued);
+        }
+    }
+
+    private void requeue(MapRecord<String, Object, Object> record) {
+        Map<String, String> values = new HashMap<>();
+        record.getValue().forEach((key, value) -> values.put(key.toString(), value.toString()));
+        publish(ProcessingJob.fromMap(values));
+        acknowledge(record.getId());
+    }
+
+    private Consumer consumer(int index) {
+        return Consumer.from(properties.group(), properties.consumerName() + "-" + index);
     }
 
     /** Recorta el stream: los mensajes ya confirmados no se vuelven a leer. */
@@ -157,10 +209,25 @@ public class RedisStreamJobQueue implements ProcessingJobQueue, SmartLifecycle {
         redis.opsForStream().trim(properties.stream(), properties.maxLength(), true);
     }
 
+    /**
+     * Deja de leer y espera (con límite) a que terminen las lecturas y los jobs en curso. Un mensaje
+     * que quede sin confirmar se reencola en el siguiente arranque.
+     */
     @Override
     public void stop() {
         if (container != null) {
             container.stop();
+        }
+        if (executor != null) {
+            executor.shutdown();
+            try {
+                long waitMillis = properties.pollTimeout().plusSeconds(30).toMillis();
+                if (!executor.awaitTermination(waitMillis, TimeUnit.MILLISECONDS)) {
+                    log.warn("Job workers did not finish in time; unacknowledged jobs will be requeued on restart");
+                }
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+            }
         }
         running = false;
     }

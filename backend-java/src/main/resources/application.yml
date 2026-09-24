@@ -75,7 +75,8 @@ documind:
     abandoned-after: 15m
     max-length: 10000
   processing:
-    queued-timeout: ${PROCESSING_QUEUED_TIMEOUT:10m}
+    # Mayor que queue.abandoned-after: un mensaje abandonado se reencola antes de dar el job por perdido
+    queued-timeout: ${PROCESSING_QUEUED_TIMEOUT:20m}
     running-timeout: ${PROCESSING_RUNNING_TIMEOUT:10m}
     reaper-interval: 60s
     state-ttl: 1h
