@@ -1,0 +1,176 @@
+# DocuMind AI: docker compose up -d --build
+# Requiere un archivo .env (copia .env.example y rellena los secretos).
+#
+# Solo el frontend se publica en todas las interfaces. La API, las bases de datos y la observabilidad
+# se publican en 127.0.0.1 para desarrollo, y el servicio de IA (Python) no se publica: únicamente
+# el backend Java puede llamarlo, dentro de la red de Docker.
+
+name: documind
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-documind}
+      POSTGRES_USER: ${POSTGRES_USER:-documind}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5450}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    logging: *default-logging
+
+  redis:
+    image: redis:7-alpine
+    # AOF: la cola de jobs (Redis Streams) sobrevive a un reinicio
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    ports:
+      - "127.0.0.1:${REDIS_HOST_PORT:-6390}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    logging: *default-logging
+
+  python-ai:
+    build:
+      context: ./ai-service
+      target: runtime
+    environment:
+      AI_SERVICE_API_KEY: ${AI_SERVICE_API_KEY:?AI_SERVICE_API_KEY is required in .env}
+      # Solo se descargan documentos del endpoint interno del backend (protección SSRF)
+      DOCUMENT_SOURCE_ALLOWED_PREFIXES: http://java-api:8080/internal/v1/documents/
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
+      OCR_LANGUAGES: spa+eng
+      LOG_FORMAT: json
+    expose:
+      - "8000"
+    restart: unless-stopped
+    logging: *default-logging
+
+  java-api:
+    build: ./backend-java
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-documind}
+      POSTGRES_USER: ${POSTGRES_USER:-documind}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required in .env}
+      AI_SERVICE_URL: ${AI_SERVICE_URL:-http://python-ai:8000}
+      AI_SERVICE_API_KEY: ${AI_SERVICE_API_KEY}
+      AI_SERVICE_READ_TIMEOUT: ${AI_SERVICE_READ_TIMEOUT:-120s}
+      DOCUMENT_SOURCE_BASE_URL: http://java-api:8080
+      FILE_STORAGE_PATH: ${FILE_STORAGE_PATH:-/storage/documents}
+      WORKER_CONSUMER_NAME: java-api
+      LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
+    volumes:
+      - documents-storage:/storage/documents
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-8096}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      python-ai:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+
+  web:
+    build: ./frontend
+    ports:
+      - "${WEB_HOST_PORT:-4300}:8080"
+    depends_on:
+      java-api:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_HOST_PORT:-9096}:9090"
+    depends_on:
+      - java-api
+    restart: unless-stopped
+    logging: *default-logging
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./infrastructure/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infrastructure/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:${GRAFANA_HOST_PORT:-3006}:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    logging: *default-logging
+
+  # ---- LLM local opcional: docker compose --profile ollama up -d ----
+  # Con este perfil, define en .env: LLM_BASE_URL=http://ollama:11434/v1 y LLM_MODEL=qwen2.5:1.5b
+  ollama:
+    image: ollama/ollama:0.34.3
+    profiles: ["ollama"]
+    volumes:
+      - ollama-data:/root/.ollama
+    expose:
+      - "11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    logging: *default-logging
+
+  # Descarga el modelo una sola vez (queda en el volumen ollama-data)
+  ollama-pull:
+    image: ollama/ollama:0.34.3
+    profiles: ["ollama"]
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["ollama", "pull", "${LLM_MODEL:-qwen2.5:1.5b}"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  postgres-data:
+  redis-data:
+  documents-storage:
+  prometheus-data:
+  grafana-data:
+  ollama-data:
