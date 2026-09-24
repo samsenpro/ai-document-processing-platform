@@ -18,8 +18,9 @@ from app.services.text_utils import fold
 
 _I = re.IGNORECASE
 
+# "electr\w?nica" tolera que el OCR lea mal la tilde ("ELECTRONICA", "ELECTRÓNICA", "ELECTRXNICA")
 INVOICE_NUMBER = re.compile(
-    r"\b(?:n[uú]mero\s+de\s+factura|invoice\s+number|factura(?:\s+electr[oó]nica)?(?:\s+de\s+venta)?|invoice)"
+    r"\b(?:n[uú]mero\s+de\s+factura|invoice\s+number|factura(?:\s+electr\w?nica)?(?:\s+de\s+venta)?|invoice)"
     r"[ \t]*(?:n[o°º]\.?|n[uú]m(?:ero)?\.?|number|#)?[ \t]*[:#.]?[ \t]*([A-Z]{0,6}[- ]?\d[\w\-/]{0,20})",
     _I,
 )

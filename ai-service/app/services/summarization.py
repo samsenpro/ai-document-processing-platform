@@ -74,17 +74,34 @@ class Summarizer:
         return summary[:1500]
 
 
+def _sentences(text: str) -> list[str]:
+    """Frases del texto. Las líneas cortas sin puntuación final (títulos, cabeceras de sección, datos
+    de contacto) se separan del párrafo para que no se cuelen al principio de una frase."""
+    sentences: list[str] = []
+    for paragraph in re.split(r"\n{2,}", text):
+        buffer: list[str] = []
+        for line in (line.strip() for line in paragraph.split("\n")):
+            if not line:
+                continue
+            if len(line) < 60 and not line.endswith((".", "!", "?", ",", ";", ":")):
+                sentences.extend(_SENTENCE_SPLIT.split(" ".join(buffer)))
+                buffer = []
+                continue
+            buffer.append(line)
+        sentences.extend(_SENTENCE_SPLIT.split(" ".join(buffer)))
+    return [s.strip() for s in sentences if s.strip()]
+
+
 def extractive_summary(text: str, max_sentences: int) -> list[str]:
     """Selecciona las frases con más palabras relevantes (frecuencia de términos) y las devuelve en
     el orden original del documento."""
     if max_sentences <= 0:
         return []
-    sentences = [s.strip().replace("\n", " ") for s in _SENTENCE_SPLIT.split(text)]
     candidates = [
         (index, sentence)
-        for index, sentence in enumerate(sentences)
-        if 40 <= len(sentence) <= 400 and len(sentence.split()) >= 6
-        and sum(c.isalpha() for c in sentence) / len(sentence) > 0.6
+        for index, sentence in enumerate(_sentences(text))
+        if 40 <= len(sentence) <= 400 and len(sentence.split()) >= 6 and sentence.endswith((".", "!", "?"))
+        and "@" not in sentence and sum(c.isalpha() for c in sentence) / len(sentence) > 0.6
     ]
     if not candidates:
         return []

@@ -4,7 +4,7 @@ import logging
 import docx
 import pypdfium2 as pdfium
 from PIL import Image, ImageSequence, UnidentifiedImageError
-from pypdf import PdfReader
+from pypdf import PageObject, PdfReader
 from pypdf.errors import PdfReadError
 
 from app.core.config import Settings
@@ -66,7 +66,9 @@ class TextExtractionService:
                 except Exception:  # pypdf puede fallar en páginas concretas con fuentes rotas
                     logger.warning("Text layer of page %d could not be read", index + 1)
                     text = ""
-                if len(text.strip()) < self._min_chars and self._ocr_enabled:
+                # Solo se aplica OCR a páginas con poco texto que además contienen imágenes (escaneadas):
+                # una página digital corta (una firma, un pie de página) no lo necesita
+                if len(text.strip()) < self._min_chars and self._ocr_enabled and _has_images(reader.pages[index]):
                     rendered = rendered or pdfium.PdfDocument(content)
                     image = rendered[index].render(scale=self._dpi / 72).to_pil()
                     ocr_text = self._ocr_image(image)
@@ -130,3 +132,16 @@ class TextExtractionService:
             raise ProcessingError(ErrorCode.OCR_UNAVAILABLE, str(ex)) from ex
         OCR_PAGES.inc()
         return text
+
+
+def _has_images(page: PageObject) -> bool:
+    """Indica si la página contiene imágenes (o formularios que pueden contenerlas), sin decodificarlas."""
+    try:
+        resources = page.get("/Resources")
+        xobjects = resources.get_object().get("/XObject") if resources else None
+        if not xobjects:
+            return False
+        xobjects = xobjects.get_object()
+        return any(xobjects[name].get_object().get("/Subtype") in ("/Image", "/Form") for name in xobjects)
+    except Exception:  # PDF con recursos mal formados: ante la duda se intenta el OCR
+        return True

@@ -42,8 +42,8 @@ def test_rejects_binary_and_non_docx_archives():
 
 def test_digital_pdf_uses_the_text_layer_without_ocr():
     ocr = FakeOcr("no debería usarse")
-    result = extract(text_pdf(["Factura FE-1 emitida por ACME S.A.S.", "Total a pagar al vencimiento: $ 100.000"]),
-                     ocr)
+    # La segunda página tiene poco texto pero no contiene imágenes: no es una página escaneada
+    result = extract(text_pdf(["Factura FE-1 emitida por ACME S.A.S.", "Total: $ 100.000"]), ocr)
     assert "Factura FE-1 emitida por ACME S.A.S." in result.text
     assert (result.source_format, result.page_count, result.ocr_pages, ocr.calls) == (SourceFormat.PDF, 2, 0, 0)
 

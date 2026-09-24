@@ -28,6 +28,14 @@ def test_extractive_summary_keeps_document_order():
     )
 
 
+def test_extractive_summary_skips_headings_and_contact_lines():
+    sentences = extractive_summary(samples.REPORT_ES, 3) + extractive_summary(samples.RESUME_ES, 3)
+    assert sentences
+    assert all(s.endswith(".") for s in sentences)
+    assert not any(s.startswith(("Informe trimestral", "Resumen ejecutivo", "María Fernanda")) for s in sentences)
+    assert not any("@" in s for s in sentences)
+
+
 def test_prose_documents_combine_template_and_extractive_sentences():
     entities = {"parties": ["A S.A.S.", "B LTDA"], "contract_type": "arrendamiento", "start_date": None,
                 "end_date": None}

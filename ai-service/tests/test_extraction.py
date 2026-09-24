@@ -27,6 +27,11 @@ def test_spanish_invoice():
     }
 
 
+def test_invoice_number_tolerates_ocr_misreads():
+    text = samples.INVOICE_ES.replace("ELECTRÓNICA", "ELECTRXNICA")
+    assert extract(text, DocumentType.INVOICE).entities["invoice_number"] == "FE-10234"
+
+
 def test_english_invoice():
     entities = extract(samples.INVOICE_EN, DocumentType.INVOICE, language="en").entities
     assert entities["invoice_number"] == "INV-2026-0042"
