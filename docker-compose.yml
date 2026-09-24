@@ -69,6 +69,8 @@ services:
 
   java-api:
     build: ./backend-java
+    # El cierre ordenado espera a los jobs en curso (una llamada al LLM puede tardar decenas de segundos)
+    stop_grace_period: 60s
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
