@@ -1,0 +1,22 @@
+[project]
+name = "documind-ai-service"
+version = "1.0.0"
+description = "DocuMind AI - document processing microservice (OCR, classification, extraction, summarization)"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = ["ocr: tests that need the Tesseract binary"]
+filterwarnings = ["ignore:Using `httpx` with `starlette.testclient` is deprecated"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+# B008: Depends() en los argumentos por defecto es el patrón estándar de FastAPI
+# SIM905: la lista de stopwords es más legible como texto que como literal
+ignore = ["B008", "SIM905"]

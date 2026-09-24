@@ -1,0 +1,52 @@
+# Entorno (credenciales)
+.env
+.env.*
+!.env.example
+
+# Almacenamiento local de documentos (desarrollo)
+storage/
+
+# ---- Java / Maven ----
+target/
+!.mvn/wrapper/maven-wrapper.jar
+*.class
+hs_err_pid*
+replay_pid*
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# ---- Node / Angular ----
+node_modules/
+.angular/
+dist/
+coverage/
+
+# ---- Logs ----
+*.log
+logs/
+
+# ---- IDEs ----
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+.vscode/
+.classpath
+.project
+.settings/
+.factorypath
+
+# ---- Sistema operativo ----
+.DS_Store
+Thumbs.db
