@@ -1,3 +1,5 @@
+**🇪🇸 Español** | [🇬🇧 English](README.en.md)
+
 # DocuMind AI — Intelligent Document Processing Platform
 
 ![Java](https://img.shields.io/badge/Java-21-orange?logo=openjdk&logoColor=white)
